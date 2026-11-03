@@ -1,6 +1,6 @@
 id = "farzoom"
 name = "Far Zoom"
-version = "1.0.0"
+version = "2.0.0"
 description = "Hold a key to zoom (starts at 2x, adjustable); the wheel zooms further up to your max zoom (up to 10x). Based on Horizon's official Zoom (MIT)."
 authors = ["Khang"]
 api = "0.1"
