@@ -1,0 +1,31 @@
+name: Build Far Zoom
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install cargo-horizon-mod
+        run: cargo install --git https://github.com/Vasysik/horizon-android --branch android cargo-horizon-mod
+      - name: Build farzoom.hmod
+        run: cargo horizon-mod build
+      - name: Show result
+        run: ls -l target/horizon-mod/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farzoom-hmod
+          path: target/horizon-mod/farzoom.hmod
+      - name: Publish release (direct download link)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/horizon-mod/farzoom.hmod
