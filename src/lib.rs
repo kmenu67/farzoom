@@ -9,33 +9,74 @@ use horizon_mod_sdk::{
 const KEY: &str = "zoom";
 const LEVELS: [u8; 7] = [2, 3, 4, 5, 6, 8, 10];
 const MAXES: [u8; 5] = [3, 4, 6, 8, 10];
-const MIN: f32 = 1.25;
-const STEP: f32 = 1.25;
-const LEVEL_BUTTON: u32 = 2;
-const MAX_BUTTON: u32 = 3;
-const SMOOTH_BUTTON: u32 = 4;
-const SENSITIVITY_BUTTON: u32 = 5;
+const MIN: f32 = 1.1;
+const STEP: f32 = 1.15;
+const SPEED: f32 = 14.0;
+const KEY_BUTTON: u32 = 2;
+const LEVEL_BUTTON: u32 = 3;
+const MAX_BUTTON: u32 = 4;
+const SMOOTH_BUTTON: u32 = 5;
+const SENSITIVITY_BUTTON: u32 = 6;
+
+fn key_name(letter: u8) -> String {
+    format!("key.keyboard.{}", letter as char)
+}
+
+fn next_letter(letter: u8) -> u8 {
+    if letter >= b'z' || letter < b'a' { b'a' } else { letter + 1 }
+}
 
 struct FarZoom {
+    letter: u8,
     level: u8,
     max: u8,
     smooth: bool,
     sensitivity: bool,
-    held: Option<f32>,
+    held: bool,
+    target: f32,
+    shown: f32,
 }
 
 impl FarZoom {
     fn show(&self) {
-        let factor = self.held.unwrap_or(1.0);
+        let factor = self.shown;
         render::set_zoom(ZoomView {
             factor,
-            smooth: self.smooth,
-            turn: if self.sensitivity { 1.0 / factor } else { 1.0 },
+            smooth: false,
+            turn: if self.sensitivity && factor > 1.0 { 1.0 / factor } else { 1.0 },
         });
+    }
+    fn step(&mut self, seconds: f32) {
+        let before = self.shown;
+        if !self.smooth {
+            self.shown = self.target;
+        } else {
+            let a = self.shown.ln();
+            let b = self.target.ln();
+            let k = 1.0 - (-seconds.max(0.0) * SPEED).exp();
+            let next = a + (b - a) * k;
+            if (b - next).abs() < 0.003 {
+                self.shown = self.target;
+            } else {
+                self.shown = next.exp();
+            }
+        }
+        if self.shown != before {
+            self.show();
+        }
     }
     fn page(&self) {
         let on = |b: bool| if b { "ON" } else { "OFF" };
+        let next = next_letter(self.letter) as char;
         ui::set_settings(&[
+            Widget::Button(ButtonWidget {
+                id: KEY_BUTTON,
+                label: format!(
+                    "Zoom key: {} (tap = {})",
+                    (self.letter as char).to_ascii_uppercase(),
+                    next.to_ascii_uppercase()
+                ),
+            }),
             Widget::Button(ButtonWidget {
                 id: LEVEL_BUTTON,
                 label: format!("Starting zoom: {}x", self.level),
@@ -56,6 +97,7 @@ impl FarZoom {
     }
     fn save(&self) {
         let flag = |b: bool| if b { &b"true"[..] } else { &b"false"[..] };
+        let _ = storage::set("letter", &[self.letter]);
         let _ = storage::set("level", self.level.to_string().as_bytes());
         let _ = storage::set("max", self.max.to_string().as_bytes());
         let _ = storage::set("smooth", flag(self.smooth));
@@ -69,7 +111,12 @@ fn stored(key: &str) -> Option<String> {
 
 impl Mod for FarZoom {
     fn init() -> Result<(Self, Registration), String> {
-        input::register_key(KEY, "Zoom key", "key.keyboard.c")?;
+        let letter = stored("letter")
+            .and_then(|v| v.trim().bytes().next())
+            .map(|b| b.to_ascii_lowercase())
+            .filter(|b| b.is_ascii_lowercase())
+            .unwrap_or(b'c');
+        input::register_key(KEY, "Zoom key (change it with the button below)", &key_name(letter))?;
         let max = stored("max")
             .and_then(|v| v.trim().parse::<u8>().ok())
             .map_or(10, |v| v.clamp(2, 10));
@@ -78,42 +125,55 @@ impl Mod for FarZoom {
             .map_or(2, |v| v.clamp(2, max));
         let flag = |key: &str| stored(key).is_none_or(|v| v.trim() != "false");
         let zoom = FarZoom {
+            letter,
             level,
             max,
             smooth: flag("smooth"),
             sensitivity: flag("sensitivity"),
-            held: None,
+            held: false,
+            target: 1.0,
+            shown: 1.0,
         };
         zoom.page();
         Ok((zoom, Registration::new().on_frame()))
     }
-    fn frame(&mut self, _seconds: f32) {
-        let mut changed = false;
+    fn frame(&mut self, seconds: f32) {
         for event in input::poll() {
             match event {
                 Event::KeyDown(k) if k == KEY => {
-                    self.held = Some(f32::from(self.level).clamp(MIN, f32::from(self.max)));
+                    self.held = true;
+                    self.target = f32::from(self.level).clamp(MIN, f32::from(self.max));
                     input::claim_wheel(true);
                 }
                 Event::KeyUp(k) if k == KEY => {
-                    self.held = None;
+                    self.held = false;
+                    self.target = 1.0;
                     input::claim_wheel(false);
                 }
                 Event::Wheel(steps) => {
-                    let max = f32::from(self.max);
-                    let Some(z) = &mut self.held else { continue };
-                    *z = (*z * STEP.powf(steps)).clamp(MIN, max);
+                    if self.held {
+                        let max = f32::from(self.max);
+                        self.target = (self.target * STEP.powf(steps)).clamp(MIN, max);
+                    }
                 }
-                _ => continue,
+                _ => {}
             }
-            changed = true;
         }
-        if changed {
-            self.show();
-        }
+        self.step(seconds);
     }
     fn ui_select(&mut self, id: u32, _row: u32) {
         match id {
+            KEY_BUTTON => {
+                self.letter = next_letter(self.letter);
+                self.held = false;
+                self.target = 1.0;
+                input::claim_wheel(false);
+                let _ = input::register_key(
+                    KEY,
+                    "Zoom key (change it with the button below)",
+                    &key_name(self.letter),
+                );
+            }
             LEVEL_BUTTON => {
                 let i = LEVELS.iter().position(|&l| l == self.level).unwrap_or(0);
                 self.level = LEVELS[(i + 1) % LEVELS.len()];
